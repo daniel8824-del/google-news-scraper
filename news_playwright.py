@@ -161,9 +161,9 @@ async def extract_with_playwright(url: str) -> dict:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
             
-            # 페이지 로드 (타임아웃 60초)
+            # 페이지 로드 (타임아웃 120초)
             # networkidle 대신 domcontentloaded 사용 (더 빠르고 안정적)
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            await page.goto(url, wait_until='domcontentloaded', timeout=120000)
             
             # 페이지가 완전히 로드될 때까지 대기
             await page.wait_for_timeout(5000)  # 5초 추가 대기 (JavaScript 렌더링)
@@ -188,7 +188,14 @@ async def extract_with_playwright(url: str) -> dict:
                 element.decompose()
             
             # article, main 태그 우선 검색
-            content_tag = soup.find('article') or soup.find('main') or soup.find('body')
+            # 다양한 뉴스 사이트 구조 대응
+            content_tag = (
+                soup.find('article') or 
+                soup.find('main') or 
+                soup.find('div', class_=re.compile(r'article|content|post|entry', re.I)) or
+                soup.find('div', id=re.compile(r'article|content|post|entry', re.I)) or
+                soup.find('body')
+            )
             
             if content_tag:
                 # 텍스트 추출 및 정리
@@ -243,7 +250,7 @@ async def extract_with_playwright(url: str) -> dict:
             "content": "",
             "content_length": 0,
             "extraction_method": "playwright",
-            "error": "페이지 로드 타임아웃 (60초 초과)"
+            "error": "페이지 로드 타임아웃 (120초 초과)"
         }
     except Exception as e:
         return {
