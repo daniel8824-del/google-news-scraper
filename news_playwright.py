@@ -165,16 +165,24 @@ async def extract_with_playwright(url: str) -> dict:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
             
-            # 페이지 로드 (타임아웃 30초, load 이벤트만 기다림)
-            # load: HTML 문서만 로드되면 진행 (이미지/광고 무시)
+            # 페이지 로드 (타임아웃 30초, commit 이벤트 대기)
+            # commit: 네비게이션 완료, DOM 변경 완료
             try:
-                await page.goto(url, wait_until='load', timeout=30000)
+                await page.goto(url, wait_until='commit', timeout=30000)
+                # DOM이 안정될 때까지 대기
+                await page.wait_for_load_state('domcontentloaded', timeout=10000)
             except PlaywrightTimeoutError:
-                # 타임아웃 시에도 진행 (부분 로딩된 콘텐츠 사용)
+                # 타임아웃 시에도 진행
                 pass
             
-            # JavaScript 렌더링 대기
-            await page.wait_for_timeout(3000)
+            # JavaScript 렌더링 및 DOM 안정화 대기
+            await page.wait_for_timeout(5000)
+            
+            # 본문 요소가 나타날 때까지 추가 대기
+            try:
+                await page.wait_for_selector('article, main, .post_content, .editor, .article-content', timeout=5000)
+            except:
+                pass  # 요소 못 찾아도 진행
             
             # 렌더링된 HTML 가져오기
             html = await page.content()
