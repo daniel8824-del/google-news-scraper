@@ -1,0 +1,17 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv
+.git
+.gitignore
+*.md
+*.csv
+*.json
+test_*.py
+.DS_Store
+.railway/
+
