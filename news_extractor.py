@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, HttpUrl
-from typing import Optional, List
+from typing import Optional
 from newspaper import Article
 from urllib.parse import urlparse
 import json
@@ -51,9 +51,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "title": "",
             "content": "",
             "content_length": 0,
-            "authors": [],
-            "publish_date": None,
-            "top_image": None,
             "extraction_method": "newspaper3k",
             "error": f"요청 검증 실패: {error_text}"
         }
@@ -74,9 +71,6 @@ async def general_exception_handler(request: Request, exc: Exception):
             "title": "",
             "content": "",
             "content_length": 0,
-            "authors": [],
-            "publish_date": None,
-            "top_image": None,
             "extraction_method": "newspaper3k",
             "error": f"서버 오류: {str(exc)}"
         }
@@ -92,9 +86,6 @@ class ExtractResponse(BaseModel):
     title: str
     content: str
     content_length: int
-    authors: List[str]
-    publish_date: Optional[str]
-    top_image: Optional[str]
     extraction_method: str
     error: Optional[str] = None
 
@@ -174,9 +165,6 @@ def extract_article(url: str) -> dict:
                 "title": article.title or "",
                 "content": content_stripped,
                 "content_length": content_length,
-                "authors": article.authors or [],
-                "publish_date": str(article.publish_date) if article.publish_date else None,
-                "top_image": article.top_image or None,
                 "extraction_method": "newspaper3k",
                 "error": f"본문이 너무 짧습니다 ({content_length}자). JavaScript 렌더링 사이트일 가능성 높음. Tavily API 사용을 권장합니다."
             }
@@ -189,9 +177,6 @@ def extract_article(url: str) -> dict:
             "title": article.title or "",
             "content": content_stripped,
             "content_length": content_length,
-            "authors": article.authors or [],
-            "publish_date": str(article.publish_date) if article.publish_date else None,
-            "top_image": article.top_image or None,
             "extraction_method": "newspaper3k",
             "error": None
         }
@@ -205,9 +190,6 @@ def extract_article(url: str) -> dict:
             "title": "",
             "content": "",
             "content_length": 0,
-            "authors": [],
-            "publish_date": None,
-            "top_image": None,
             "extraction_method": "newspaper3k",
             "error": f"추출 실패: {error_message}"
         }
@@ -249,12 +231,12 @@ async def extract(request: ExtractRequest):
     
     Returns:
     - success: 성공 여부 (본문 100자 이상이면 True)
+    - url: 요청한 URL
+    - domain: 도메인
     - title: 기사 제목
     - content: 기사 본문
     - content_length: 본문 길이
-    - authors: 저자 목록
-    - publish_date: 발행일
-    - top_image: 대표 이미지 URL
+    - extraction_method: 추출 방법 (newspaper3k)
     - error: 에러 메시지 (실패 시)
     
     Note:
@@ -295,9 +277,6 @@ async def extract(request: ExtractRequest):
                 "title": "",
                 "content": "",
                 "content_length": 0,
-                "authors": [],
-                "publish_date": None,
-                "top_image": None,
                 "extraction_method": "newspaper3k",
                 "error": f"서버 내부 오류: {str(e)}"
             }
