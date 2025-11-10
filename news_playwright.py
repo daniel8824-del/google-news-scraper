@@ -152,21 +152,29 @@ async def extract_with_playwright(url: str) -> dict:
                     '--disable-software-rasterizer',
                     '--disable-extensions',
                     '--single-process',  # 단일 프로세스 모드 (메모리 절약)
+                    '--disable-images',  # 이미지 로딩 차단 (속도 향상)
                 ]
             )
             page = await browser.new_page()
+            
+            # 이미지, 폰트, 스타일시트 차단 (텍스트만 필요)
+            await page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", lambda route: route.abort())
             
             # User-Agent 설정 (일부 사이트는 봇 차단)
             await page.set_extra_http_headers({
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
             
-            # 페이지 로드 (타임아웃 120초)
-            # networkidle 대신 domcontentloaded 사용 (더 빠르고 안정적)
-            await page.goto(url, wait_until='domcontentloaded', timeout=120000)
+            # 페이지 로드 (타임아웃 30초, load 이벤트만 기다림)
+            # load: HTML 문서만 로드되면 진행 (이미지/광고 무시)
+            try:
+                await page.goto(url, wait_until='load', timeout=30000)
+            except PlaywrightTimeoutError:
+                # 타임아웃 시에도 진행 (부분 로딩된 콘텐츠 사용)
+                pass
             
-            # 페이지가 완전히 로드될 때까지 대기
-            await page.wait_for_timeout(5000)  # 5초 추가 대기 (JavaScript 렌더링)
+            # JavaScript 렌더링 대기
+            await page.wait_for_timeout(3000)
             
             # 렌더링된 HTML 가져오기
             html = await page.content()
@@ -250,7 +258,7 @@ async def extract_with_playwright(url: str) -> dict:
             "content": "",
             "content_length": 0,
             "extraction_method": "playwright",
-            "error": "페이지 로드 타임아웃 (120초 초과)"
+            "error": "페이지 로드 타임아웃 (30초 초과, 하지만 부분 로딩 시도함)"
         }
     except Exception as e:
         return {
