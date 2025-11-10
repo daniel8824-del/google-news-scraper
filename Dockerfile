@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y \
 
 # requirements.txt 복사 및 의존성 설치
 COPY requirements.txt .
+# pip 업그레이드 (tiktoken prebuilt wheel 사용을 위해)
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 애플리케이션 코드 복사
