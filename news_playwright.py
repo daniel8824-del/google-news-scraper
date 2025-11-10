@@ -140,8 +140,20 @@ async def extract_with_playwright(url: str) -> dict:
     """
     try:
         async with async_playwright() as p:
-            # 브라우저 실행 (헤드리스 모드)
-            browser = await p.chromium.launch(headless=True)
+            # 브라우저 실행 (헤드리스 모드, 메모리 최적화)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',  # /dev/shm 사용 안 함 (메모리 부족 방지)
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--disable-extensions',
+                    '--single-process',  # 단일 프로세스 모드 (메모리 절약)
+                ]
+            )
             page = await browser.new_page()
             
             # User-Agent 설정 (일부 사이트는 봇 차단)
