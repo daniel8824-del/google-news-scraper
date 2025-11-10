@@ -7,4 +7,4 @@ lxml==4.9.3
 lxml-html-clean==0.4.3
 Pillow==10.1.0
 playwright==1.40.0
-tavily-python==0.5.9
+tavily-python==0.7.12
