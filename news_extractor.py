@@ -1,4 +1,4 @@
-# newspaper3k 기반 뉴스 추출 API (v2.1 - 일관된 응답 형식 보장)
+# newspaper3k 기반 뉴스 추출 API (v2.2)
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -13,8 +13,8 @@ import uvicorn
 
 app = FastAPI(
     title="News Extractor API",
-    description="newspaper3k 기반 뉴스 본문 추출 API (품질 검증 포함)",
-    version="2.1.0"
+    description="newspaper3k 기반 뉴스 본문 추출 API",
+    version="2.2.0"
 )
 
 # CORS 설정
@@ -135,13 +135,49 @@ async def extract_url_from_request(request: Request, body_bytes: bytes = None) -
     return "", ""
 
 
+def is_legal_notice_page(content: str) -> bool:
+    """
+    법적고지/약관 페이지 감지
+    
+    채널A 등에서 본문 대신 법적고지 페이지만 가져오는 경우 감지
+    """
+    if not content or len(content) < 50:
+        return False
+    
+    content_stripped = content.strip()
+    
+    # 패턴 1: "법적고지"로 시작
+    if content_stripped.startswith('법적고지'):
+        return True
+    
+    # 패턴 2: 채널A 법적고지 특정 문구
+    if '채널A에서 제공하는 콘텐츠에 대하여' in content and \
+       '법령을 준수하기 위하여' in content and \
+       '기자' not in content:
+        return True
+    
+    # 패턴 3: 일반적인 법적고지/약관 키워드 조합
+    legal_keywords = ['법적고지', '면책조항', '이용약관', '개인정보처리방침']
+    legal_count = sum(1 for keyword in legal_keywords if keyword in content_stripped)
+    
+    # 법적 키워드가 2개 이상이고, 뉴스 관련 키워드가 없는 경우
+    news_keywords = ['기자', '취재', '보도', '기사', '뉴스']
+    has_news_content = any(keyword in content_stripped for keyword in news_keywords)
+    
+    if legal_count >= 2 and not has_news_content:
+        return True
+    
+    return False
+
+
 def extract_article(url: str) -> dict:
     """
     newspaper3k로 기사 추출
     
     품질 기준:
-    - 본문 100자 이상: 성공
+    - 법적고지 페이지: 실패
     - 본문 100자 미만: 실패
+    - 본문 100자 이상: 성공
     """
     try:
         # Article 객체 생성
@@ -151,15 +187,28 @@ def extract_article(url: str) -> dict:
         article.download()
         article.parse()
         
-        # 본문 길이 체크
+        # 본문 추출
         content = article.text or ""
         content_stripped = content.strip()
         content_length = len(content_stripped)
         
-        # 핵심: 100자 이하면 실패로 처리
+        # 1단계: 법적고지 페이지 감지
+        if is_legal_notice_page(content_stripped):
+            return {
+                "success": False,
+                "url": url,
+                "domain": get_domain(url),
+                "title": article.title or "",
+                "content": "",
+                "content_length": 0,
+                "extraction_method": "newspaper3k",
+                "error": "법적고지/약관 페이지가 감지되었습니다. JavaScript 렌더링이 필요한 사이트입니다. Tavily API 사용을 권장합니다."
+            }
+        
+        # 2단계: 본문 길이 체크 (100자 이하면 실패)
         if content_length < 100:
             return {
-                "success": False,  # 실패로 판정
+                "success": False,
                 "url": url,
                 "domain": get_domain(url),
                 "title": article.title or "",
@@ -169,7 +218,7 @@ def extract_article(url: str) -> dict:
                 "error": f"본문이 너무 짧습니다 ({content_length}자). JavaScript 렌더링 사이트일 가능성 높음. Tavily API 사용을 권장합니다."
             }
         
-        # 100자 이상이면 성공
+        # 3단계: 100자 이상이면 성공
         return {
             "success": True,
             "url": url,
@@ -199,15 +248,18 @@ def root():
     """API 정보"""
     return {
         "service": "News Extractor API",
-        "version": "2.1.0",
-        "description": "newspaper3k 기반 뉴스 본문 추출 (품질 검증 포함)",
+        "version": "2.2.0",
+        "description": "newspaper3k 기반 뉴스 본문 추출 (품질 검증 + 법적고지 감지)",
         "method": "newspaper3k",
-        "quality_threshold": "본문 100자 이상",
+        "quality_checks": [
+            "법적고지/약관 페이지 감지",
+            "본문 100자 이상"
+        ],
         "endpoints": {
             "POST /extract": "뉴스 본문 추출",
             "GET /health": "헬스체크"
         },
-        "notes": "100자 미만 본문은 실패로 처리하며, 모든 응답은 HTTP 200으로 반환됩니다."
+        "notes": "법적고지 페이지 또는 100자 미만 본문은 실패로 처리하며, 모든 응답은 HTTP 200으로 반환됩니다."
     }
 
 
@@ -218,7 +270,7 @@ def health_check():
         "status": "healthy",
         "service": "news-extractor-api",
         "method": "newspaper3k",
-        "version": "2.1.0"
+        "version": "2.2.0"
     }
 
 
@@ -230,7 +282,7 @@ async def extract(request: ExtractRequest):
     - **url**: 추출할 뉴스 URL
     
     Returns:
-    - success: 성공 여부 (본문 100자 이상이면 True)
+    - success: 성공 여부 (법적고지 X + 본문 100자 이상이면 True)
     - url: 요청한 URL
     - domain: 도메인
     - title: 기사 제목
@@ -240,6 +292,7 @@ async def extract(request: ExtractRequest):
     - error: 에러 메시지 (실패 시)
     
     Note:
+    - 법적고지/약관 페이지가 감지되면 success=False를 반환합니다.
     - 본문이 100자 미만이면 success=False를 반환합니다.
     - 이 경우 Tavily API 사용을 권장합니다.
     - ⭐ 모든 응답은 HTTP 200으로 반환됩니다 (워크플로우 중단 방지)
@@ -252,7 +305,7 @@ async def extract(request: ExtractRequest):
         
         result = extract_article(url_str)
         
-        # ⭐ 핵심 변경: 성공/실패 모두 HTTP 200 OK로 반환
+        # ⭐ 핵심: 성공/실패 모두 HTTP 200 OK로 반환
         # n8n의 Always Output Data와 함께 사용하여 워크플로우 중단 방지
         return JSONResponse(
             status_code=200,
