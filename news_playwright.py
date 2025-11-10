@@ -1,4 +1,4 @@
-# Playwright 기반 뉴스 추출 API (v1.0 - 동적 렌더링 전용)
+# Playwright + Tavily 기반 뉴스 추출 API (v2.0 - 자동 Fallback)
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,8 +8,10 @@ from typing import Optional
 from urllib.parse import urlparse
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
+from tavily import TavilyClient
 import json
 import re
+import os
 import uvicorn
 
 app = FastAPI(
@@ -129,6 +131,91 @@ async def extract_url_from_request(request: Request, body_bytes: bytes = None) -
         pass
     
     return "", ""
+
+
+def extract_with_tavily(url: str) -> dict:
+    """
+    Tavily API로 뉴스 본문 추출
+    
+    Playwright가 실패한 경우 fallback으로 사용됩니다.
+    """
+    try:
+        # Tavily API 키 가져오기
+        api_key = os.environ.get("TAVILY_API_KEY")
+        if not api_key:
+            return {
+                "success": False,
+                "url": url,
+                "domain": get_domain(url),
+                "title": "",
+                "content": "",
+                "content_length": 0,
+                "extraction_method": "tavily",
+                "error": "TAVILY_API_KEY 환경 변수가 설정되지 않았습니다."
+            }
+        
+        # Tavily 클라이언트 생성
+        client = TavilyClient(api_key=api_key)
+        
+        # URL에서 콘텐츠 추출 (advanced 모드)
+        response = client.extract(
+            urls=[url],
+            mode="advanced"  # advanced 모드로 더 상세한 추출
+        )
+        
+        if not response or not response.get('results'):
+            return {
+                "success": False,
+                "url": url,
+                "domain": get_domain(url),
+                "title": "",
+                "content": "",
+                "content_length": 0,
+                "extraction_method": "tavily",
+                "error": "Tavily API가 콘텐츠를 추출하지 못했습니다."
+            }
+        
+        # 첫 번째 결과 가져오기
+        result = response['results'][0]
+        content = result.get('raw_content', '')
+        content_stripped = content.strip()
+        content_length = len(content_stripped)
+        
+        # 100자 이하면 실패
+        if content_length < 100:
+            return {
+                "success": False,
+                "url": url,
+                "domain": get_domain(url),
+                "title": "",
+                "content": content_stripped,
+                "content_length": content_length,
+                "extraction_method": "tavily",
+                "error": f"본문이 너무 짧습니다 ({content_length}자)."
+            }
+        
+        return {
+            "success": True,
+            "url": url,
+            "domain": get_domain(url),
+            "title": "",  # Tavily는 제목을 제공하지 않음
+            "content": content_stripped,
+            "content_length": content_length,
+            "extraction_method": "tavily",
+            "error": None
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "url": url,
+            "domain": get_domain(url),
+            "title": "",
+            "content": "",
+            "content_length": 0,
+            "extraction_method": "tavily",
+            "error": f"Tavily 추출 실패: {str(e)}"
+        }
 
 
 async def extract_with_playwright(url: str) -> dict:
@@ -285,20 +372,24 @@ async def extract_with_playwright(url: str) -> dict:
 def root():
     """API 정보"""
     return {
-        "service": "News Extractor API (Dynamic)",
-        "version": "1.0.0",
-        "description": "Playwright 기반 동적 렌더링 뉴스 본문 추출",
-        "method": "playwright",
+        "service": "News Extractor API (Dynamic + Tavily Fallback)",
+        "version": "2.0.0",
+        "description": "Playwright + Tavily 자동 Fallback 뉴스 본문 추출",
+        "methods": ["playwright", "tavily"],
         "quality_threshold": "본문 100자 이상",
         "performance": {
-            "speed": "느림 (10-20초/기사)",
-            "use_case": "조선일보, imbc 등 JavaScript 렌더링 사이트"
+            "speed": "10-30초/기사",
+            "use_case": "조선일보, imbc, Vogue 등 까다로운 사이트"
+        },
+        "extraction_strategy": {
+            "step1": "Playwright 시도 (JavaScript 렌더링)",
+            "step2": "실패 시 Tavily API 자동 전환"
         },
         "endpoints": {
-            "POST /playwright": "Playwright로 뉴스 본문 추출",
+            "POST /playwright": "Playwright + Tavily 자동 Fallback 추출",
             "GET /health": "헬스체크"
         },
-        "notes": "동적 렌더링 사이트 전용. 일반 사이트는 news_extractor.py (포트 8000) 사용을 권장합니다."
+        "notes": "동적 렌더링 사이트 전용. Playwright 실패 시 자동으로 Tavily API 사용."
     }
 
 
@@ -307,16 +398,17 @@ def health_check():
     """헬스체크"""
     return {
         "status": "healthy",
-        "service": "news-playwright-api",
-        "method": "playwright",
-        "version": "1.0.0"
+        "service": "news-playwright-tavily-api",
+        "methods": ["playwright", "tavily"],
+        "version": "2.0.0",
+        "tavily_configured": bool(os.environ.get("TAVILY_API_KEY"))
     }
 
 
 @app.post("/playwright")
 async def extract_playwright(request: ExtractRequest):
     """
-    Playwright로 동적 렌더링 뉴스 본문 추출
+    Playwright + Tavily 자동 Fallback 뉴스 본문 추출
     
     - **url**: 추출할 뉴스 URL
     
@@ -327,13 +419,13 @@ async def extract_playwright(request: ExtractRequest):
     - title: 기사 제목
     - content: 기사 본문
     - content_length: 본문 길이
-    - extraction_method: 추출 방법 (playwright)
+    - extraction_method: 추출 방법 (playwright 또는 tavily)
     - error: 에러 메시지 (실패 시)
     
     Note:
-    - JavaScript 렌더링이 필요한 사이트(조선일보, imbc 등)에 사용
-    - 처리 시간: 10-20초/기사 (느림)
-    - 일반 정적 사이트는 news_extractor.py의 /extract 사용 권장
+    - 1단계: Playwright로 시도 (JavaScript 렌더링)
+    - 2단계: 실패 시 Tavily API로 자동 전환 (fallback)
+    - 처리 시간: 10-30초/기사
     - 모든 응답은 HTTP 200으로 반환됩니다
     """
     try:
@@ -341,7 +433,15 @@ async def extract_playwright(request: ExtractRequest):
         if not url_str:
             raise ValueError("URL이 제공되지 않았습니다.")
         
+        # 1단계: Playwright 시도
         result = await extract_with_playwright(url_str)
+        
+        # 2단계: Playwright 실패 시 Tavily fallback
+        if not result.get('success'):
+            tavily_result = extract_with_tavily(url_str)
+            # Tavily 성공하면 사용, 실패해도 원래 Playwright 결과 반환
+            if tavily_result.get('success'):
+                result = tavily_result
         
         return JSONResponse(
             status_code=200,
@@ -376,4 +476,3 @@ if __name__ == "__main__":
     # 기본 포트 8001 사용 (8000과 구분)
     port = int(os.environ.get("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
