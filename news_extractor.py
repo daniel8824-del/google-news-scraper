@@ -1,6 +1,7 @@
-# newspaper3k 기반 뉴스 추출 API
-from fastapi import FastAPI, HTTPException
+# newspaper3k 기반 뉴스 추출 API (v2.0 - 500 에러 수정)
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 from newspaper import Article
@@ -9,8 +10,8 @@ import uvicorn
 
 app = FastAPI(
     title="News Extractor API",
-    description="newspaper3k 기반 뉴스 본문 추출 API",
-    version="1.0.0"
+    description="newspaper3k 기반 뉴스 본문 추출 API (품질 검증 포함)",
+    version="2.0.0"
 )
 
 # CORS 설정
@@ -117,13 +118,15 @@ def root():
     """API 정보"""
     return {
         "service": "News Extractor API",
-        "version": "1.0.0",
-        "description": "newspaper3k 기반 뉴스 본문 추출",
+        "version": "2.0.0",
+        "description": "newspaper3k 기반 뉴스 본문 추출 (품질 검증 포함)",
         "method": "newspaper3k",
+        "quality_threshold": "본문 100자 이상",
         "endpoints": {
             "POST /extract": "뉴스 본문 추출",
             "GET /health": "헬스체크"
-        }
+        },
+        "notes": "100자 미만 본문은 실패로 처리하며, 모든 응답은 HTTP 200으로 반환됩니다."
     }
 
 
@@ -133,11 +136,12 @@ def health_check():
     return {
         "status": "healthy",
         "service": "news-extractor-api",
-        "method": "newspaper3k"
+        "method": "newspaper3k",
+        "version": "2.0.0"
     }
 
 
-@app.post("/extract", response_model=ExtractResponse)
+@app.post("/extract")
 async def extract(request: ExtractRequest):
     """
     뉴스 본문 추출
@@ -145,23 +149,48 @@ async def extract(request: ExtractRequest):
     - **url**: 추출할 뉴스 URL
     
     Returns:
-    - success: 성공 여부
+    - success: 성공 여부 (본문 100자 이상이면 True)
     - title: 기사 제목
     - content: 기사 본문
     - content_length: 본문 길이
     - authors: 저자 목록
     - publish_date: 발행일
     - top_image: 대표 이미지 URL
+    - error: 에러 메시지 (실패 시)
+    
+    Note:
+    - 본문이 100자 미만이면 success=False를 반환합니다.
+    - 이 경우 Tavily API 사용을 권장합니다.
+    - ⭐ 모든 응답은 HTTP 200으로 반환됩니다 (워크플로우 중단 방지)
     """
-    result = extract_article(str(request.url))
-    
-    if not result["success"]:
-        raise HTTPException(
-            status_code=500,
-            detail=f"추출 실패: {result['error']}"
+    try:
+        result = extract_article(str(request.url))
+        
+        # ⭐ 핵심 변경: 성공/실패 모두 HTTP 200 OK로 반환
+        # n8n의 Always Output Data와 함께 사용하여 워크플로우 중단 방지
+        return JSONResponse(
+            status_code=200,
+            content=result
         )
-    
-    return result
+        
+    except Exception as e:
+        # 예상치 못한 에러도 200으로 반환
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": False,
+                "url": str(request.url),
+                "domain": get_domain(str(request.url)),
+                "title": "",
+                "content": "",
+                "content_length": 0,
+                "authors": [],
+                "publish_date": None,
+                "top_image": None,
+                "extraction_method": "newspaper3k",
+                "error": f"서버 내부 오류: {str(e)}"
+            }
+        )
 
 
 if __name__ == "__main__":
