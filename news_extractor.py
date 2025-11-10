@@ -1,17 +1,20 @@
-# newspaper3k 기반 뉴스 추출 API (v2.0 - 500 에러 수정)
-from fastapi import FastAPI
+# newspaper3k 기반 뉴스 추출 API (v2.1 - 일관된 응답 형식 보장)
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 from newspaper import Article
 from urllib.parse import urlparse
+import json
+import re
 import uvicorn
 
 app = FastAPI(
     title="News Extractor API",
     description="newspaper3k 기반 뉴스 본문 추출 API (품질 검증 포함)",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # CORS 설정
@@ -22,6 +25,62 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 전역 예외 핸들러: 모든 에러를 일관된 형식으로 반환
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Pydantic 검증 에러를 일관된 형식으로 변환"""
+    error_messages = []
+    for error in exc.errors():
+        field = ".".join(str(loc) for loc in error.get("loc", []))
+        msg = error.get("msg", "Validation error")
+        error_messages.append(f"{field}: {msg}")
+    
+    error_text = "; ".join(error_messages) if error_messages else "요청 형식이 올바르지 않습니다."
+    
+    # 요청에서 URL 추출 시도
+    body_bytes = getattr(exc, 'body', None)
+    url_str, domain = await extract_url_from_request(request, body_bytes)
+    
+    return JSONResponse(
+        status_code=200,  # HTTP 200으로 반환 (워크플로우 중단 방지)
+        content={
+            "success": False,
+            "url": url_str,
+            "domain": domain,
+            "title": "",
+            "content": "",
+            "content_length": 0,
+            "authors": [],
+            "publish_date": None,
+            "top_image": None,
+            "extraction_method": "newspaper3k",
+            "error": f"요청 검증 실패: {error_text}"
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """모든 예외를 일관된 형식으로 반환"""
+    # 요청에서 URL 추출 시도
+    url_str, domain = await extract_url_from_request(request)
+    
+    return JSONResponse(
+        status_code=200,  # HTTP 200으로 반환 (워크플로우 중단 방지)
+        content={
+            "success": False,
+            "url": url_str,
+            "domain": domain,
+            "title": "",
+            "content": "",
+            "content_length": 0,
+            "authors": [],
+            "publish_date": None,
+            "top_image": None,
+            "extraction_method": "newspaper3k",
+            "error": f"서버 오류: {str(exc)}"
+        }
+    )
 
 class ExtractRequest(BaseModel):
     url: HttpUrl
@@ -43,6 +102,46 @@ class ExtractResponse(BaseModel):
 def get_domain(url: str) -> str:
     """URL에서 도메인 추출"""
     return urlparse(url).netloc
+
+
+async def extract_url_from_request(request: Request, body_bytes: bytes = None) -> tuple[str, str]:
+    """
+    요청에서 URL을 추출 시도
+    Returns: (url_str, domain)
+    """
+    # body_bytes가 제공된 경우 사용 (RequestValidationError에서)
+    if body_bytes:
+        body_text = None
+        try:
+            body_text = body_bytes.decode('utf-8')
+            # JSON 파싱 시도
+            body = json.loads(body_text)
+            if isinstance(body, dict) and "url" in body:
+                url_str = str(body["url"])
+                return url_str, get_domain(url_str)
+        except:
+            pass
+        
+        # JSON 파싱 실패 시 텍스트에서 URL 패턴 찾기
+        if body_text:
+            try:
+                url_match = re.search(r'https?://[^\s"\'<>]+', body_text)
+                if url_match:
+                    url_str = url_match.group(0)
+                    return url_str, get_domain(url_str)
+            except:
+                pass
+    
+    # body_bytes가 없는 경우 요청 본문 읽기 시도
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "url" in body:
+            url_str = str(body["url"])
+            return url_str, get_domain(url_str)
+    except:
+        pass
+    
+    return "", ""
 
 
 def extract_article(url: str) -> dict:
@@ -118,7 +217,7 @@ def root():
     """API 정보"""
     return {
         "service": "News Extractor API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "description": "newspaper3k 기반 뉴스 본문 추출 (품질 검증 포함)",
         "method": "newspaper3k",
         "quality_threshold": "본문 100자 이상",
@@ -137,7 +236,7 @@ def health_check():
         "status": "healthy",
         "service": "news-extractor-api",
         "method": "newspaper3k",
-        "version": "2.0.0"
+        "version": "2.1.0"
     }
 
 
@@ -164,7 +263,12 @@ async def extract(request: ExtractRequest):
     - ⭐ 모든 응답은 HTTP 200으로 반환됩니다 (워크플로우 중단 방지)
     """
     try:
-        result = extract_article(str(request.url))
+        # URL을 안전하게 문자열로 변환
+        url_str = str(request.url) if request.url else ""
+        if not url_str:
+            raise ValueError("URL이 제공되지 않았습니다.")
+        
+        result = extract_article(url_str)
         
         # ⭐ 핵심 변경: 성공/실패 모두 HTTP 200 OK로 반환
         # n8n의 Always Output Data와 함께 사용하여 워크플로우 중단 방지
@@ -175,12 +279,19 @@ async def extract(request: ExtractRequest):
         
     except Exception as e:
         # 예상치 못한 에러도 200으로 반환
+        try:
+            url_str = str(request.url) if request.url else ""
+            domain = get_domain(url_str) if url_str else ""
+        except:
+            url_str = ""
+            domain = ""
+        
         return JSONResponse(
             status_code=200,
             content={
                 "success": False,
-                "url": str(request.url),
-                "domain": get_domain(str(request.url)),
+                "url": url_str,
+                "domain": domain,
                 "title": "",
                 "content": "",
                 "content_length": 0,
