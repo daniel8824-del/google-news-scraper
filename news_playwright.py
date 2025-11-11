@@ -166,11 +166,24 @@ async def extract_with_playwright(url: str) -> dict:
                 
                 # 빠른 로딩
                 try:
-                    await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                    
                     if 'news.zum.com' in url_lower:
-                        await page.wait_for_timeout(8000)  # ZUM은 8초 필요 (서버 환경 고려)
+                        # ZUM은 완전 로딩 대기
+                        print(f"[Stealth] 페이지 로딩 시작...")
+                        await page.goto(url, wait_until='load', timeout=30000)
+                        print(f"[Stealth] load 완료")
+                        
+                        # article_body가 나타날 때까지 대기 (최대 20초)
+                        try:
+                            print(f"[Stealth] article_body 대기 중...")
+                            await page.wait_for_selector('.article_body, article', timeout=20000)
+                            print(f"[Stealth] article_body 발견!")
+                        except PlaywrightTimeoutError:
+                            print(f"[Stealth] article_body 타임아웃, 계속 진행")
+                        
+                        # 추가 안정화 대기
+                        await page.wait_for_timeout(3000)
                     else:
+                        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                         await page.wait_for_timeout(2000)
                     
                     html = await page.content()
