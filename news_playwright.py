@@ -120,15 +120,19 @@ async def extract_with_playwright(url: str) -> dict:
     """
     Playwright로 동적 렌더링 사이트 추출
     
-    Vogue/ZUM: Stealth 모드 (봇 감지 우회)
+    vogue.co.kr / news.zum.com: Stealth 모드 (봇 감지 우회)
     일반 사이트: 안정적인 기본 전략
     """
     try:
         # Stealth 모드가 필요한 사이트 감지
-        needs_stealth = 'vogue.co.kr' in url.lower() or 'zum.com' in url.lower()
+        url_lower = url.lower()
+        needs_stealth = (
+            'vogue.co.kr' in url_lower or 
+            'news.zum.com' in url_lower
+        )
         
         # ============================================================
-        # Vogue/ZUM: Stealth 전략
+        # vogue.co.kr / news.zum.com: Stealth 전략
         # ============================================================
         if needs_stealth:
             print(f"[Stealth] {url}")
@@ -164,8 +168,8 @@ async def extract_with_playwright(url: str) -> dict:
                 try:
                     await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                     
-                    if 'zum.com' in url.lower():
-                        await page.wait_for_timeout(3000)
+                    if 'news.zum.com' in url_lower:
+                        await page.wait_for_timeout(5000)  # ZUM은 5초 필요
                     else:
                         await page.wait_for_timeout(2000)
                     
@@ -190,15 +194,34 @@ async def extract_with_playwright(url: str) -> dict:
                     texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
                     content = '\n\n'.join(texts)
                 
-                # class 검색
+                # class 검색 (ZUM 특화 selector 포함)
                 if len(content) < 100:
-                    for selector in ['.article-content', '.article_body', '.post-content', 
-                                    '.entry-content', '.content', '.article-body']:
+                    selectors = [
+                        '.article-body', '.article-content', '.news-body', 
+                        '.story-body', '[data-t="article-body"]',
+                        'div[itemprop="articleBody"]', '.articleBody',
+                        '.article_body', '.post-content', '.entry-content', '.content'
+                    ]
+                    for selector in selectors:
                         element = soup.select_one(selector)
                         if element:
                             paragraphs = element.find_all('p')
-                            texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
-                            content = '\n\n'.join(texts)
+                            
+                            if paragraphs:
+                                # 30자 이상 필터
+                                long_texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
+                                all_texts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+                                
+                                if long_texts:
+                                    content = '\n\n'.join(long_texts)
+                                elif all_texts:
+                                    # 30자 미만이지만 있으면 사용
+                                    content = '\n\n'.join(all_texts)
+                            else:
+                                # p 태그 없으면 전체 텍스트 (ZUM 같은 경우)
+                                full_text = element.get_text(separator='\n', strip=True)
+                                content = full_text
+                            
                             if len(content) > 100:
                                 break
                 
@@ -210,16 +233,23 @@ async def extract_with_playwright(url: str) -> dict:
                         texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
                         content = '\n\n'.join(texts)
                 
+                # body 직계 자식 p 태그
+                if len(content) < 100:
+                    body = soup.find('body')
+                    if body:
+                        direct_paragraphs = body.find_all('p', recursive=False)
+                        if direct_paragraphs:
+                            texts = [p.get_text(strip=True) for p in direct_paragraphs 
+                                    if len(p.get_text(strip=True)) > 30]
+                            content = '\n\n'.join(texts)
+                
                 # 모든 p 태그
                 if len(content) < 100:
                     paragraphs = soup.find_all('p')
-                    texts = []
-                    for p in paragraphs:
-                        text = p.get_text(strip=True)
-                        if len(text) > 30:
-                            if not any(kw in text.lower() for kw in ['쿠키', 'cookie', '로그인', 'login', '구독', 'subscribe']):
-                                if not re.match(r'\d{4}\.\d{1,2}\.\d{1,2}by\s', text):
-                                    texts.append(text)
+                    texts = [p.get_text(strip=True) for p in paragraphs 
+                            if len(p.get_text(strip=True)) > 30 
+                            and not any(k in p.get_text().lower() for k in ['cookie', '로그인', 'copyright', '저작권', '쿠키', 'login', '구독', 'subscribe'])
+                            and not re.match(r'\d{4}\.\d{1,2}\.\d{1,2}by\s', p.get_text(strip=True))]
                     content = '\n\n'.join(texts)
                 
                 # 후처리
@@ -369,18 +399,18 @@ def root():
         "service": "News Extractor API (Dynamic)",
         "version": "1.0.0",
         "description": "Playwright 기반 동적 렌더링 뉴스 본문 추출",
-        "method": "playwright + stealth (Vogue/ZUM)",
+        "method": "playwright + stealth (vogue.co.kr, news.zum.com)",
         "quality_threshold": "본문 100자 이상",
         "performance": {
             "speed": "느림 (10-20초/기사)",
             "use_case": "JavaScript 렌더링 사이트, 봇 감지 사이트"
         },
-        "stealth_sites": ["vogue.co.kr", "zum.com"],
+        "stealth_sites": ["vogue.co.kr", "news.zum.com"],
         "endpoints": {
             "POST /playwright": "Playwright로 뉴스 본문 추출",
             "GET /health": "헬스체크"
         },
-        "notes": "Vogue/ZUM은 Stealth 모드 자동 적용. 일반 사이트는 news_extractor.py (포트 8000) 사용을 권장합니다."
+        "notes": "vogue.co.kr, news.zum.com은 Stealth 모드 자동 적용. 일반 사이트는 news_extractor.py (포트 8000) 사용을 권장합니다."
     }
 
 
@@ -411,7 +441,7 @@ async def extract_playwright(request: ExtractRequest):
     - error: 에러 메시지 (실패 시)
     
     Note:
-    - Vogue/ZUM: Stealth 모드 자동 적용 (봇 감지 우회)
+    - vogue.co.kr, news.zum.com: Stealth 모드 자동 적용 (봇 감지 우회)
     - 일반 사이트: 표준 Playwright (빠름)
     - 처리 시간: 10-20초/기사
     - 일반 정적 사이트는 news_extractor.py의 /extract 사용 권장
