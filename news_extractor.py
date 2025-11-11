@@ -129,6 +129,17 @@ def extract_article(url: str) -> dict:
     - 본문 100자 미만: 실패
     """
     try:
+        # 채널A는 무조건 실패 처리 (약관 페이지 반환 문제)
+        if 'ichannela.com' in url:
+            return {
+                "success": False,
+                "url": url,
+                "content": "",
+                "content_length": 0,
+                "extraction_method": "newspaper3k",
+                "error": "채널A는 newspaper3k로 추출 불가. Playwright API를 사용하세요."
+            }
+        
         # Article 객체 생성
         article = Article(url, language='ko')
         
