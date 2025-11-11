@@ -823,13 +823,16 @@ async def extract_with_playwright(url: str) -> dict:
     """
     Playwright Stealth 모드로 동적 렌더링 사이트 추출
     
-    Vogue 전략 적용:
+    사이트별 최적화 전략:
+    - Vogue/ZUM: 빠른 전략 (domcontentloaded + 2초)
+    - 일반 사이트: 안정적 전략 (commit + domcontentloaded + 5초)
     - Stealth 모드로 봇 감지 우회
-    - domcontentloaded까지만 빠르게 로드
-    - 최소한의 안정화 대기 (2초)
     - clean_news_body()로 메타데이터 제거
     """
     try:
+        # 특수 사이트 감지 (Vogue, ZUM)
+        is_special_site = 'vogue.co.kr' in url.lower() or 'zum.com' in url.lower()
+        
         async with async_playwright() as p:
             # 브라우저 실행 (Stealth 모드 최적화)
             browser = await p.chromium.launch(
@@ -843,40 +846,74 @@ async def extract_with_playwright(url: str) -> dict:
                 ]
             )
             
-            # Context 생성 (viewport, user-agent 설정)
-            context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
+            # Context 생성 - 특수 사이트는 locale 설정 추가
+            context_options = {
+                'viewport': {'width': 1920, 'height': 1080},
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+            }
             
+            if is_special_site:
+                context_options['locale'] = 'ko-KR'
+                context_options['timezone_id'] = 'Asia/Seoul'
+                print(f"[특수] 빠른 전략 적용: {url}")
+            else:
+                print(f"[일반] 안정적 전략 적용: {url}")
+            
+            context = await browser.new_context(**context_options)
             page = await context.new_page()
             
             # Stealth 모드 적용
             stealth = Stealth()
             await stealth.apply_stealth_async(page)
             
-            # 리소스 차단 (이미지, 폰트, CSS)
-            await page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", lambda route: route.abort())
+            # 리소스 차단 - 특수 사이트는 차단 없음, 일반 사이트는 이미지/폰트만 차단
+            if not is_special_site:
+                await page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda route: route.abort())
+                print("[리소스 차단] 이미지/폰트")
+            else:
+                print("[리소스 차단 없음] 모든 리소스 로드")
             
-            # 페이지 로드 (domcontentloaded만 대기, 타임아웃 15초)
+            # 페이지 로드 - 사이트별 전략
             try:
-                await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                print(f"✅ 페이지 로드 완료: {url}")
-                
-                # 즉시 HTML 추출
-                html = await page.content()
-                print(f"✅ HTML 추출 성공! 길이: {len(html):,}자")
-                
-                # 짧은 안정화 대기 (2초)
-                print("⏳ 짧은 안정화 대기 (2초)...")
-                await page.wait_for_timeout(2000)
-                
-                # 최종 HTML 가져오기
-                html = await page.content()
-                print(f"✅ 최종 HTML 길이: {len(html):,}자")
+                if is_special_site:
+                    # Vogue/ZUM: 빠른 전략
+                    await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                    print(f"[로드 완료] domcontentloaded")
+                    
+                    html = await page.content()
+                    print(f"[HTML 추출] {len(html):,}자")
+                    
+                    print("[안정화 대기] 2초...")
+                    await page.wait_for_timeout(2000)
+                    
+                    html = await page.content()
+                    print(f"[최종 HTML] {len(html):,}자")
+                    
+                else:
+                    # 일반 사이트: 안정적 전략 (Tavily 시절)
+                    await page.goto(url, wait_until='commit', timeout=30000)
+                    print(f"[커밋 완료] commit")
+                    
+                    # DOM 안정화 대기
+                    await page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    print(f"[DOM 완료] domcontentloaded")
+                    
+                    # 안정화 대기
+                    print("[안정화 대기] 5초...")
+                    await page.wait_for_timeout(5000)
+                    
+                    # 본문 요소 대기 (선택적)
+                    try:
+                        await page.wait_for_selector('article, main, .post_content, .editor, .article-content', timeout=5000)
+                        print("[본문 요소] 감지됨")
+                    except:
+                        print("[본문 요소] 미감지 (진행)")
+                    
+                    html = await page.content()
+                    print(f"[최종 HTML] {len(html):,}자")
                 
             except PlaywrightTimeoutError:
-                print("⚠️ 타임아웃, 현재 HTML로 진행...")
+                print("[타임아웃] 현재 HTML로 진행...")
                 html = await page.content()
             
             # 브라우저 닫기
@@ -933,8 +970,25 @@ async def extract_with_playwright(url: str) -> dict:
                     if len(text) > 30:
                         # 광고/네비/메타데이터 제외
                         if not any(keyword in text.lower() for keyword in ['쿠키', 'cookie', '로그인', 'login', '구독', 'subscribe']):
-                            texts.append(text)
+                            # 날짜+작성자 패턴 제외 (예: "2025.10.30by 황혜원")
+                            if not re.match(r'\d{4}\.\d{1,2}\.\d{1,2}by\s', text):
+                                texts.append(text)
                 content = '\n\n'.join(texts)
+            
+            # 후처리: 남아있는 작성자/날짜 정보 제거
+            content_lines = content.split('\n')
+            filtered_lines = []
+            for line in content_lines:
+                line = line.strip()
+                # 날짜 패턴으로 시작하는 줄 제거
+                if re.match(r'\d{4}\.\d{1,2}\.\d{1,2}', line):
+                    continue
+                # "by"가 포함되고 50자 이하인 짧은 줄 제거 (작성자 정보)
+                if 'by' in line.lower() and len(line) < 50 and ',' in line:
+                    continue
+                if line:  # 빈 줄이 아니면 추가
+                    filtered_lines.append(line)
+            content = '\n'.join(filtered_lines)
             
             content_stripped = content.strip()
             content_length = len(content_stripped)
@@ -993,19 +1047,23 @@ def root():
         "method": "playwright-stealth",
         "quality_threshold": "본문 100자 이상",
         "performance": {
-            "speed": "5-15초/기사",
+            "speed": "10-30초/기사",
             "use_case": "조선일보, imbc, Vogue, News1 등 까다로운 사이트"
+        },
+        "extraction_strategy": {
+            "vogue_zum": "빠른 전략 (domcontentloaded + 2초, 리소스 차단 없음)",
+            "general": "안정적 전략 (commit + domcontentloaded + 5초, 이미지/폰트만 차단)"
         },
         "features": {
             "stealth_mode": "봇 감지 우회",
-            "fast_extraction": "domcontentloaded 전략",
+            "adaptive_extraction": "사이트별 최적화 전략",
             "auto_cleanup": "메타데이터/기자정보/UI요소 자동 제거"
         },
         "endpoints": {
             "POST /playwright": "Playwright Stealth 추출",
             "GET /health": "헬스체크"
         },
-        "notes": "Vogue 전략 적용. 빠르고 깨끗한 본문 추출."
+        "notes": "사이트별 최적화 전략으로 안정적이고 빠른 추출."
     }
 
 
@@ -1037,9 +1095,10 @@ async def extract_playwright(request: ExtractRequest):
     
     Note:
     - Playwright Stealth 모드로 봇 감지 우회
-    - domcontentloaded 전략으로 빠른 추출
+    - Vogue/ZUM: 빠른 전략 (domcontentloaded + 2초)
+    - 일반 사이트: 안정적 전략 (commit + domcontentloaded + 5초)
     - clean_news_body()로 자동 필터링
-    - 처리 시간: 5-15초/기사
+    - 처리 시간: 10-30초/기사
     - 모든 응답은 HTTP 200으로 반환됩니다
     """
     try:
