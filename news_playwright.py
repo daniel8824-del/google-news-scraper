@@ -120,250 +120,79 @@ async def extract_with_playwright(url: str) -> dict:
     """
     Playwright로 동적 렌더링 사이트 추출
     
-    vogue.co.kr / news.zum.com: Stealth 모드 (봇 감지 우회)
-    일반 사이트: 안정적인 기본 전략
+    안정적인 기본 전략 (모든 사이트 동일)
     """
     try:
-        # Stealth 모드가 필요한 사이트 감지
-        url_lower = url.lower()
-        needs_stealth = (
-            'vogue.co.kr' in url_lower or 
-            'news.zum.com' in url_lower
-        )
-        
-        # ============================================================
-        # vogue.co.kr / news.zum.com: Stealth 전략
-        # ============================================================
-        if needs_stealth:
-            print(f"[Stealth] {url}")
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        '--disable-blink-features=AutomationControlled',
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-infobars',
-                    ]
-                )
-                
-                context = await browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                    locale='ko-KR',
-                    timezone_id='Asia/Seoul',
-                )
-                
-                page = await context.new_page()
-                
-                # Stealth 적용
-                try:
-                    from playwright_stealth import Stealth
-                    stealth = Stealth()
-                    await stealth.apply_stealth_async(page)
-                except ImportError:
-                    print("[경고] playwright-stealth 미설치")
-                
-                # 빠른 로딩
-                try:
-                    if 'news.zum.com' in url_lower:
-                        # ZUM은 완전 로딩 대기
-                        print(f"[Stealth] 페이지 로딩 시작...")
-                        await page.goto(url, wait_until='load', timeout=30000)
-                        print(f"[Stealth] load 완료")
-                        
-                        # article_body가 나타날 때까지 대기 (최대 20초)
-                        try:
-                            print(f"[Stealth] article_body 대기 중...")
-                            await page.wait_for_selector('.article_body, article', timeout=20000)
-                            print(f"[Stealth] article_body 발견!")
-                        except PlaywrightTimeoutError:
-                            print(f"[Stealth] article_body 타임아웃, 계속 진행")
-                        
-                        # 추가 안정화 대기
-                        await page.wait_for_timeout(3000)
-                    else:
-                        await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                        await page.wait_for_timeout(2000)
-                    
-                    html = await page.content()
-                    print(f"[Stealth] HTML 길이: {len(html):,}자")
-                except PlaywrightTimeoutError:
-                    html = await page.content()
-                    print(f"[Stealth] 타임아웃 후 HTML: {len(html):,}자")
-                
-                await context.close()
-                await browser.close()
-                
-                # Stealth 사이트용 본문 추출
-                soup = BeautifulSoup(html, 'html.parser')
-                print(f"[Stealth] BeautifulSoup 파싱 완료")
-                for script in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
-                    script.decompose()
-                
-                content = ""
-                
-                # article 태그
-                article = soup.find('article')
-                if article:
-                    print(f"[Stealth] <article> 발견")
-                    paragraphs = article.find_all('p')
-                    print(f"[Stealth] p 태그 {len(paragraphs)}개")
-                    texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
-                    content = '\n\n'.join(texts)
-                    print(f"[Stealth] article에서 추출: {len(content)}자")
-                else:
-                    print(f"[Stealth] <article> 없음")
-                
-                # class 검색 (ZUM 특화 selector 포함)
-                if len(content) < 100:
-                    selectors = [
-                        '.article-body', '.article-content', '.news-body', 
-                        '.story-body', '[data-t="article-body"]',
-                        'div[itemprop="articleBody"]', '.articleBody',
-                        '.article_body', '.post-content', '.entry-content', '.content'
-                    ]
-                    for selector in selectors:
-                        element = soup.select_one(selector)
-                        if element:
-                            paragraphs = element.find_all('p')
-                            
-                            if paragraphs:
-                                # 30자 이상 필터
-                                long_texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
-                                all_texts = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
-                                
-                                if long_texts:
-                                    content = '\n\n'.join(long_texts)
-                                elif all_texts:
-                                    # 30자 미만이지만 있으면 사용
-                                    content = '\n\n'.join(all_texts)
-                            else:
-                                # p 태그 없으면 전체 텍스트 (ZUM 같은 경우)
-                                full_text = element.get_text(separator='\n', strip=True)
-                                content = full_text
-                            
-                            if len(content) > 100:
-                                break
-                
-                # main 태그
-                if len(content) < 100:
-                    main = soup.find('main')
-                    if main:
-                        paragraphs = main.find_all('p')
-                        texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
-                        content = '\n\n'.join(texts)
-                
-                # body 직계 자식 p 태그
-                if len(content) < 100:
-                    body = soup.find('body')
-                    if body:
-                        direct_paragraphs = body.find_all('p', recursive=False)
-                        if direct_paragraphs:
-                            texts = [p.get_text(strip=True) for p in direct_paragraphs 
-                                    if len(p.get_text(strip=True)) > 30]
-                            content = '\n\n'.join(texts)
-                
-                # 모든 p 태그
-                if len(content) < 100:
-                    paragraphs = soup.find_all('p')
-                    texts = [p.get_text(strip=True) for p in paragraphs 
-                            if len(p.get_text(strip=True)) > 30 
-                            and not any(k in p.get_text().lower() for k in ['cookie', '로그인', 'copyright', '저작권', '쿠키', 'login', '구독', 'subscribe'])
-                            and not re.match(r'\d{4}\.\d{1,2}\.\d{1,2}by\s', p.get_text(strip=True))]
-                    content = '\n\n'.join(texts)
-                
-                # 후처리
-                content_lines = content.split('\n')
-                filtered_lines = []
-                for line in content_lines:
-                    line = line.strip()
-                    if re.match(r'\d{4}\.\d{1,2}\.\d{1,2}', line):
-                        continue
-                    if 'by' in line.lower() and len(line) < 50 and ',' in line:
-                        continue
-                    if line:
-                        filtered_lines.append(line)
-                content_stripped = '\n'.join(filtered_lines)
+        print(f"[Playwright] {url}")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--disable-extensions',
+                    '--single-process',
+                    '--disable-images',
+                ]
+            )
+            page = await browser.new_page()
+            
+            # 리소스 차단
+            await page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", lambda route: route.abort())
+            
+            # User-Agent 설정
+            await page.set_extra_http_headers({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            
+            # 안정적인 로딩
+            try:
+                await page.goto(url, wait_until='commit', timeout=30000)
+                await page.wait_for_load_state('domcontentloaded', timeout=10000)
+            except PlaywrightTimeoutError:
+                pass
+            
+            await page.wait_for_timeout(5000)
+            
+            try:
+                await page.wait_for_selector('article, main, .post_content, .editor, .article-content', timeout=5000)
+            except:
+                pass
+            
+            html = await page.content()
+            await browser.close()
+            
+            # 본문 추출
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            for script in soup(["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]):
+                script.decompose()
+            
+            for element in soup.find_all(class_=re.compile(r'ad|advertisement|banner|sidebar|related|comment|share|social', re.I)):
+                element.decompose()
+            
+            content_tag = (
+                soup.find('article') or 
+                soup.find('main') or 
+                soup.find('div', class_=re.compile(r'article|content|post|entry', re.I)) or
+                soup.find('div', id=re.compile(r'article|content|post|entry', re.I)) or
+                soup.find('body')
+            )
+            
+            if content_tag:
+                content = content_tag.get_text(separator='\n', strip=True)
+                content = re.sub(r'\n\s*\n+', '\n\n', content)
+                content_stripped = content.strip()
                 content_length = len(content_stripped)
-                print(f"[Stealth] 최종 본문: {content_length}자")
+            else:
+                content_stripped = ""
+                content_length = 0
         
-        # ============================================================
-        # 일반 사이트: 안정적인 기본 전략
-        # ============================================================
-        else:
-            print(f"[일반] {url}")
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--disable-gpu',
-                        '--disable-software-rasterizer',
-                        '--disable-extensions',
-                        '--single-process',
-                        '--disable-images',
-                    ]
-                )
-                page = await browser.new_page()
-                
-                # 리소스 차단
-                await page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", lambda route: route.abort())
-                
-                # User-Agent 설정
-                await page.set_extra_http_headers({
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                })
-                
-                # 안정적인 로딩
-                try:
-                    await page.goto(url, wait_until='commit', timeout=30000)
-                    await page.wait_for_load_state('domcontentloaded', timeout=10000)
-                except PlaywrightTimeoutError:
-                    pass
-                
-                await page.wait_for_timeout(5000)
-                
-                try:
-                    await page.wait_for_selector('article, main, .post_content, .editor, .article-content', timeout=5000)
-                except:
-                    pass
-                
-                html = await page.content()
-                await browser.close()
-                
-                # 일반 사이트용 본문 추출
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                for script in soup(["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]):
-                    script.decompose()
-                
-                for element in soup.find_all(class_=re.compile(r'ad|advertisement|banner|sidebar|related|comment|share|social', re.I)):
-                    element.decompose()
-                
-                content_tag = (
-                    soup.find('article') or 
-                    soup.find('main') or 
-                    soup.find('div', class_=re.compile(r'article|content|post|entry', re.I)) or
-                    soup.find('div', id=re.compile(r'article|content|post|entry', re.I)) or
-                    soup.find('body')
-                )
-                
-                if content_tag:
-                    content = content_tag.get_text(separator='\n', strip=True)
-                    content = re.sub(r'\n\s*\n+', '\n\n', content)
-                    content_stripped = content.strip()
-                    content_length = len(content_stripped)
-                else:
-                    content_stripped = ""
-                    content_length = 0
-        
-        # ============================================================
-        # 공통 응답 처리
-        # ============================================================
+        # 응답 처리
         if content_length > 0:
             # 100자 이하면 실패
             if content_length < 100:
@@ -421,18 +250,17 @@ def root():
         "service": "News Extractor API (Dynamic)",
         "version": "1.0.0",
         "description": "Playwright 기반 동적 렌더링 뉴스 본문 추출",
-        "method": "playwright + stealth (vogue.co.kr, news.zum.com)",
+        "method": "playwright",
         "quality_threshold": "본문 100자 이상",
         "performance": {
-            "speed": "느림 (10-20초/기사)",
-            "use_case": "JavaScript 렌더링 사이트, 봇 감지 사이트"
+            "speed": "보통 (8-10초/기사)",
+            "use_case": "JavaScript 렌더링 사이트"
         },
-        "stealth_sites": ["vogue.co.kr", "news.zum.com"],
         "endpoints": {
             "POST /playwright": "Playwright로 뉴스 본문 추출",
             "GET /health": "헬스체크"
         },
-        "notes": "vogue.co.kr, news.zum.com은 Stealth 모드 자동 적용. 일반 사이트는 news_extractor.py (포트 8000) 사용을 권장합니다."
+        "notes": "동적 렌더링 사이트 전용. 일반 사이트는 news_extractor.py (포트 8000) 사용을 권장합니다."
     }
 
 
@@ -463,9 +291,8 @@ async def extract_playwright(request: ExtractRequest):
     - error: 에러 메시지 (실패 시)
     
     Note:
-    - vogue.co.kr, news.zum.com: Stealth 모드 자동 적용 (봇 감지 우회)
-    - 일반 사이트: 표준 Playwright (빠름)
-    - 처리 시간: 10-20초/기사
+    - JavaScript 렌더링이 필요한 사이트에 사용
+    - 처리 시간: 8-10초/기사
     - 일반 정적 사이트는 news_extractor.py의 /extract 사용 권장
     - 모든 응답은 HTTP 200으로 반환됩니다
     """
