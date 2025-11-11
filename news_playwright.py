@@ -169,19 +169,22 @@ async def extract_with_playwright(url: str) -> dict:
                     await page.goto(url, wait_until='domcontentloaded', timeout=15000)
                     
                     if 'news.zum.com' in url_lower:
-                        await page.wait_for_timeout(5000)  # ZUM은 5초 필요
+                        await page.wait_for_timeout(8000)  # ZUM은 8초 필요 (서버 환경 고려)
                     else:
                         await page.wait_for_timeout(2000)
                     
                     html = await page.content()
+                    print(f"[Stealth] HTML 길이: {len(html):,}자")
                 except PlaywrightTimeoutError:
                     html = await page.content()
+                    print(f"[Stealth] 타임아웃 후 HTML: {len(html):,}자")
                 
                 await context.close()
                 await browser.close()
                 
                 # Stealth 사이트용 본문 추출
                 soup = BeautifulSoup(html, 'html.parser')
+                print(f"[Stealth] BeautifulSoup 파싱 완료")
                 for script in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
                     script.decompose()
                 
@@ -190,9 +193,14 @@ async def extract_with_playwright(url: str) -> dict:
                 # article 태그
                 article = soup.find('article')
                 if article:
+                    print(f"[Stealth] <article> 발견")
                     paragraphs = article.find_all('p')
+                    print(f"[Stealth] p 태그 {len(paragraphs)}개")
                     texts = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
                     content = '\n\n'.join(texts)
+                    print(f"[Stealth] article에서 추출: {len(content)}자")
+                else:
+                    print(f"[Stealth] <article> 없음")
                 
                 # class 검색 (ZUM 특화 selector 포함)
                 if len(content) < 100:
@@ -265,6 +273,7 @@ async def extract_with_playwright(url: str) -> dict:
                         filtered_lines.append(line)
                 content_stripped = '\n'.join(filtered_lines)
                 content_length = len(content_stripped)
+                print(f"[Stealth] 최종 본문: {content_length}자")
         
         # ============================================================
         # 일반 사이트: 안정적인 기본 전략
